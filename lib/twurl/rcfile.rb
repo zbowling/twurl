@@ -1,9 +1,14 @@
 module Twurl
   class RCFile
     FILE = '.twurlrc'
-    @directory ||= ENV['HOME']
     class << self
-      attr_accessor :directory
+      def directory
+        @@directory ||= File.expand_path('~')
+      end
+
+      def directory=(dir)
+        @@directory = dir
+      end
 
       def file_path
         File.join(directory, FILE)
@@ -30,7 +35,7 @@ module Twurl
     end
 
     def save
-      File.open(self.class.file_path, 'w') do |rcfile|
+      File.open(self.class.file_path, File::RDWR|File::CREAT|File::TRUNC, 0600) do |rcfile|
         rcfile.write data.to_yaml
       end
     end
@@ -45,6 +50,11 @@ module Twurl
 
     def default_profile
       configuration['default_profile']
+    end
+
+    def default_profile_consumer_key
+      username, consumer_key = configuration['default_profile']
+      consumer_key
     end
 
     def default_profile=(profile)
@@ -62,7 +72,17 @@ module Twurl
     end
 
     def aliases
-      data['aliases']
+      data['aliases'] ||= {}
+    end
+
+    def bearer_token(consumer_key, bearer_token)
+      data['bearer_tokens'] ||= {}
+      data['bearer_tokens'][consumer_key] = bearer_token
+      save
+    end
+
+    def bearer_tokens
+      data['bearer_tokens']
     end
 
     def alias_from_options(options)
@@ -80,6 +100,10 @@ module Twurl
     def has_oauth_profile_for_username_with_consumer_key?(username, consumer_key)
       user_profiles = self[username]
       !user_profiles.nil? && !user_profiles[consumer_key].nil?
+    end
+
+    def has_bearer_token_for_consumer_key?(consumer_key)
+      bearer_tokens.nil? ? false : bearer_tokens.to_hash.has_key?(consumer_key)
     end
 
     def <<(oauth_client)

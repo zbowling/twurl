@@ -1,16 +1,23 @@
 module Twurl
   class CLI
-    SUPPORTED_COMMANDS     = %w(authorize accounts alias set)
+    SUPPORTED_COMMANDS     = %w(authorize accounts bearer_tokens alias set)
     DEFAULT_COMMAND        = 'request'
     PATH_PATTERN           = /^\/\w+/
-    README                 = File.dirname(__FILE__) + '/../../README'
+    PROTOCOL_PATTERN       = /^\w+:\/\//
+    README                 = File.dirname(__FILE__) + '/../../README.md'
     @output              ||= STDOUT
+    class NoPathFound < Exception
+    end
 
     class << self
       attr_accessor :output
 
       def run(args)
-        options = parse_options(args)
+        begin
+          options = parse_options(args)
+        rescue NoPathFound => e
+          exit
+        end
         dispatch(options)
       end
 
@@ -21,6 +28,8 @@ module Twurl
                        AuthorizationController
                      when 'accounts'
                        AccountInformationController
+                     when 'bearer_tokens'
+                       AppOnlyTokenInformationController
                      when 'alias'
                        AliasesController
                      when 'set'
@@ -34,19 +43,23 @@ module Twurl
       end
 
       def parse_options(args)
-        arguments = args.dup
-
         Twurl.options         = Options.new
+        Twurl.options.args    = args.dup
         Twurl.options.trace   = false
         Twurl.options.data    = {}
+        Twurl.options.headers = {}
+        Twurl.options.upload  = {}
+        Twurl.options.upload['file'] = []
 
         option_parser = OptionParser.new do |o|
           o.extend AvailableOptions
 
-          o.banner = "Usage: twurl authorize -u username -p password --consumer-key HQsAGcVm5MQT3n6j7qVJw --consumer-secret asdfasd223sd2\n" +
-                     "       twurl [options] /statuses/home_timeline.xml\n"                                                                  +
-                     "\n"                                                                                                                    +
-                     "Supported Commands:\n#{SUPPORTED_COMMANDS.sort.join(', ')}"
+          o.banner = <<-BANNER
+Usage: twurl authorize --consumer-key key --consumer-secret secret
+       twurl [options] /1.1/statuses/home_timeline.json
+
+Supported Commands: #{SUPPORTED_COMMANDS.sort.join(', ')}
+          BANNER
 
           o.section "Getting started:" do
             tutorial
@@ -54,7 +67,6 @@ module Twurl
 
           o.section "Authorization options:" do
             username
-            password
             consumer_key
             consumer_secret
             access_token
@@ -64,28 +76,67 @@ module Twurl
           o.section "Common options:" do
             trace
             data
+            raw_data
+            headers
             host
             quiet
             disable_ssl
             request_method
             help
+            version
+            proxy
+            file
+            filefield
+            base64
+            json_format
+            timeout
+            connection_timeout
+            app_only
           end
         end
 
-        arguments                 = option_parser.parse!(args)
+        begin
+          arguments               = option_parser.parse!(args)
+        rescue OptionParser::InvalidOption
+          CLI.puts "ERROR: undefined option"
+          exit
+        rescue
+          CLI.puts "ERROR: invalid argument"
+          exit
+        end
         Twurl.options.command     = extract_command!(arguments)
         Twurl.options.path        = extract_path!(arguments)
         Twurl.options.subcommands = arguments
+        
+        if Twurl.options.command == DEFAULT_COMMAND and Twurl.options.path.nil? and Twurl.options.args.empty?
+          CLI.puts option_parser
+          raise NoPathFound, "No path found"
+        end
+
         Twurl.options
+      end
+
+      def output
+        if Twurl.options && Twurl.options.output
+          Twurl.options.output
+        else
+          @output
+        end
+      end
+
+      def print(*args, &block)
+        output.print(*args, &block)
+        output.flush if output.respond_to?(:flush)
       end
 
       def puts(*args, &block)
         output.puts(*args, &block)
+        output.flush if output.respond_to?(:flush)
       end
 
       def prompt_for(label)
         system "stty -echo"
-        print "#{label}: "
+        CLI.print "#{label}: "
         result = STDIN.gets.chomp
         CLI.puts
         result
@@ -108,11 +159,21 @@ module Twurl
           path = nil
           arguments.each_with_index do |argument, index|
             if argument[PATH_PATTERN]
-              path = arguments.slice!(index)
+              path_with_params = arguments.slice!(index)
+              path, params = path_with_params.split("?", 2)
+              if params
+                path += "?" + escape_params(params)
+              end
               break
             end
           end
           path
+        end
+
+        def escape_params(params)
+          CGI::parse(params).map do |key, value|
+            "#{CGI.escape key}=#{CGI.escape value.first}"
+          end.join("&")
         end
     end
 
@@ -154,7 +215,7 @@ module Twurl
       end
 
       def token_secret
-        on('-S', '--token-secret', "Your token secret") do |secret|
+        on('-S', '--token-secret [secret]', "Your token secret") do |secret|
           options.token_secret = secret
         end
       end
@@ -162,12 +223,6 @@ module Twurl
       def username
         on('-u', '--username [username]', 'Username of account to authorize (required)') do |username|
           options.username = username
-        end
-      end
-
-      def password
-        on('-p', '--password [password]', 'Password of account to authorize (required)') do |password|
-          options.password = password ? password : CLI.prompt_for('Password')
         end
       end
 
@@ -179,16 +234,40 @@ module Twurl
 
       def data
         on('-d', '--data [data]', 'Sends the specified data in a POST request to the HTTP server.') do |data|
-          data.split('&').each do |pair|
-            key, value = pair.split('=')
-            options.data[key] = value
+          if options.args.count { |item| /content-type: (.*)/i.match(item) } > 0
+            options.data[data] = nil
+          else
+            data.split('&').each do |pair|
+              key, value = pair.split('=', 2)
+              options.data[key] = value
+            end
           end
+        end
+      end
+
+      def raw_data
+        on('-r', '--raw-data [data]', 'Sends the specified data as it is in a POST request to the HTTP server.') do |data|
+          CGI::parse(data).each_pair do |key, value|
+            options.data[key] = value.first
+          end
+        end
+      end
+
+      def headers
+        on('-A', '--header [header]', 'Adds the specified header to the request to the HTTP server.') do |header|
+          key, value = header.split(': ')
+          options.headers[key] = value
         end
       end
 
       def host
         on('-H', '--host [host]', 'Specify host to make requests to (default: api.twitter.com)') do |host|
-          options.host = host
+          if host[PROTOCOL_PATTERN]
+            protocol, protocolless_host = host.split(PROTOCOL_PATTERN, 2)
+            options.host = protocolless_host
+          else
+            options.host = host
+          end
         end
       end
 
@@ -214,6 +293,66 @@ module Twurl
         on_tail("-h", "--help", "Show this message") do
           CLI.puts self
           exit
+        end
+      end
+
+      def version
+        on_tail("-v", "--version", "Show version") do
+          CLI.puts Version
+          exit
+        end
+      end
+
+      def proxy
+        on('-P', '--proxy [proxy]', 'Specify HTTP proxy to forward requests to (default: No proxy)') do |proxy|
+          options.proxy = proxy
+        end
+      end
+
+      def file
+        on('-f', '--file [path_to_file]', 'Specify the path to the file to upload') do |file|
+          if File.file?(file)
+            options.upload['file'] << file
+          else
+            CLI.puts "ERROR: File not found"
+            exit
+          end
+        end
+      end
+
+      def filefield
+        on('-F', '--file-field [field_name]', 'Specify the POST parameter name for the file upload data (default: media)') do |filefield|
+          options.upload['filefield'] = filefield
+        end
+      end
+
+      def base64
+        on('-b', '--base64', 'Encode the uploaded file as base64 (default: false)') do |base64|
+          options.upload['base64'] = base64
+        end
+      end
+
+      def json_format
+        on('-j', '--json-pretty', 'Format response body to JSON pretty style') do |json_format|
+          options.json_format = true
+        end
+      end
+
+      def timeout
+        on('--timeout [sec]', Integer, 'Number of seconds to wait for the request to be read (default: 60)') do |timeout|
+          options.timeout = timeout
+        end
+      end
+
+      def connection_timeout
+        on('--connection-timeout [sec]', Integer, 'Number of seconds to wait for the connection to open (default: 60)') do |connection_timeout|
+          options.connection_timeout = connection_timeout
+        end
+      end
+
+      def app_only
+        on('--bearer', "Use application-only authentication (Bearer Token)") do |app_only|
+          options.app_only = true
         end
       end
     end
@@ -253,6 +392,10 @@ module Twurl
 
     def host
       super || DEFAULT_HOST
+    end
+
+    def proxy
+      super || nil
     end
   end
 end

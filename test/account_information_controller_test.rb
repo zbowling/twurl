@@ -1,6 +1,6 @@
 require File.dirname(__FILE__) + '/test_helper'
 
-class Twurl::AccountInformationController::DispatchWithNoAuthorizedAccountsTest < Test::Unit::TestCase
+class Twurl::AccountInformationController::DispatchWithNoAuthorizedAccountsTest < Minitest::Test
   attr_reader :options, :client, :controller
   def setup
     @options    = Twurl::Options.new
@@ -16,12 +16,13 @@ class Twurl::AccountInformationController::DispatchWithNoAuthorizedAccountsTest 
   end
 end
 
-class Twurl::AccountInformationController::DispatchWithOneAuthorizedAccountTest < Test::Unit::TestCase
+class Twurl::AccountInformationController::DispatchWithOneAuthorizedAccountTest < Minitest::Test
   attr_reader :options, :client, :controller
   def setup
     @options    = Twurl::Options.test_exemplar
     @client     = Twurl::OAuthClient.load_new_client_from_options(options)
     mock(Twurl::OAuthClient.rcfile).save.times(1)
+    Twurl::OAuthClient.rcfile.profiles.clear
     Twurl::OAuthClient.rcfile << client
     @controller = Twurl::AccountInformationController.new(client, options)
   end
@@ -34,7 +35,7 @@ class Twurl::AccountInformationController::DispatchWithOneAuthorizedAccountTest 
   end
 end
 
-class Twurl::AccountInformationController::DispatchWithOneUsernameThatHasAuthorizedMultipleAccountsTest < Test::Unit::TestCase
+class Twurl::AccountInformationController::DispatchWithOneUsernameThatHasAuthorizedMultipleAccountsTest < Minitest::Test
   attr_reader :default_client_options, :default_client, :other_client_options, :other_client, :controller
   def setup
     @default_client_options = Twurl::Options.test_exemplar
@@ -51,10 +52,14 @@ class Twurl::AccountInformationController::DispatchWithOneUsernameThatHasAuthori
     @controller = Twurl::AccountInformationController.new(other_client, other_client_options)
   end
 
+  def teardown
+    Twurl::OAuthClient.rcfile.profiles[default_client.username][other_client.consumer_key].clear
+  end
+
   def test_authorized_account_is_displayed_and_marked_as_the_default
-    mock(Twurl::CLI).puts(default_client.username).times(1)
-    mock(Twurl::CLI).puts("  #{default_client.consumer_key} (default)").times(1)
-    mock(Twurl::CLI).puts("  #{other_client.consumer_key}").times(1)
+    mock(Twurl::CLI).puts(default_client.username).times(1).ordered
+    mock(Twurl::CLI).puts("  #{default_client.consumer_key} (default)").times(1).ordered
+    mock(Twurl::CLI).puts("  #{other_client.consumer_key}").times(1).ordered
 
     controller.dispatch
   end

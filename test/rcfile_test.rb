@@ -1,12 +1,12 @@
 require File.dirname(__FILE__) + '/test_helper'
 
-class Twurl::RCFile::PathConstructionTest < Test::Unit::TestCase
+class Twurl::RCFile::PathConstructionTest < Minitest::Test
   def test_file_path_appends_file_to_directory
     assert_equal File.join(Twurl::RCFile.directory, Twurl::RCFile::FILE), Twurl::RCFile.file_path
   end
 end
 
-class Twurl::RCFile::LoadingTest < Test::Unit::TestCase
+class Twurl::RCFile::LoadingTest < Minitest::Test
   def test_load_parses_and_loads_file_if_it_exists
     mock(YAML).load_file(Twurl::RCFile.file_path).times(1)
     mock(Twurl::RCFile).default_rcfile_structure.never
@@ -22,7 +22,7 @@ class Twurl::RCFile::LoadingTest < Test::Unit::TestCase
   end
 end
 
-class Twurl::RCFile::InitializationTest < Test::Unit::TestCase
+class Twurl::RCFile::InitializationTest < Minitest::Test
   def test_initializing_when_the_file_does_not_exist_loads_default_rcfile_structure
     mock(YAML).load_file(Twurl::RCFile.file_path) { raise Errno::ENOENT }.times(1)
 
@@ -40,7 +40,7 @@ class Twurl::RCFile::InitializationTest < Test::Unit::TestCase
   end
 end
 
-class Twurl::RCFile::DefaultProfileFromDefaultRCFileTest < Test::Unit::TestCase
+class Twurl::RCFile::DefaultProfileFromDefaultRCFileTest < Minitest::Test
   attr_reader :rcfile
   def setup
     mock(YAML).load_file(Twurl::RCFile.file_path) { raise Errno::ENOENT }.times(1)
@@ -66,7 +66,7 @@ class Twurl::RCFile::DefaultProfileFromDefaultRCFileTest < Test::Unit::TestCase
   end
 end
 
-class Twurl::RCFile::UpdatingTest < Test::Unit::TestCase
+class Twurl::RCFile::UpdatingTest < Minitest::Test
   attr_reader :rcfile
   def setup
     mock(YAML).load_file(Twurl::RCFile.file_path) { raise Errno::ENOENT }.times(1)
@@ -108,7 +108,28 @@ class Twurl::RCFile::UpdatingTest < Test::Unit::TestCase
   end
 end
 
-class Twurl::RCFile::SavingTest < Test::Unit::TestCase
+class Twurl::RCFile::BearerTokenTest < Minitest::Test
+  attr_reader :rcfile
+  def setup
+    @rcfile = Twurl::RCFile.new
+    mock(rcfile).save.times(any_times)
+  end
+
+  def test_save_bearer_token
+    options = Twurl::Options.test_app_only_exemplar
+    expected_response = {
+      options.consumer_key => options.bearer_token
+    }
+    rcfile << Twurl::OAuthClient.test_exemplar
+    rcfile.bearer_token(options.consumer_key, options.bearer_token)
+
+    client = Twurl::AppOnlyOAuthClient.test_app_only_exemplar
+
+    assert_equal expected_response, rcfile.bearer_tokens
+  end
+end
+
+class Twurl::RCFile::SavingTest < Minitest::Test
   attr_reader :rcfile
   def setup
     delete_rcfile
@@ -128,9 +149,15 @@ class Twurl::RCFile::SavingTest < Test::Unit::TestCase
     assert rcfile_exists?
   end
 
+  def test_file_is_not_world_readable
+    client = Twurl::OAuthClient.test_exemplar
+    rcfile << client
+    assert_equal 33152, File.stat(Twurl::RCFile.file_path).mode
+  end
+
   private
     def rcfile_exists?
-      File.exists?(Twurl::RCFile.file_path)
+      File.exist?(Twurl::RCFile.file_path)
     end
 
     def delete_rcfile
